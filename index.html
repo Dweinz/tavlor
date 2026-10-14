@@ -21,16 +21,16 @@ aside section{border:1px solid var(--line);border-radius:8px;padding:12px;margin
 h2{font-size:16px;margin:0 0 8px}
 button,.btn{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;cursor:pointer}
 .hint{color:var(--muted);font-size:13px;margin:6px 0}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;align-items:center}
 #lib{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:8px;margin-top:8px;min-height:60px}
 .thumb{position:relative}
 .thumb img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:pointer;display:block;border:1px solid var(--line)}
 .thumb .del{position:absolute;top:2px;right:2px;padding:0 6px;line-height:18px;background:#000a;color:#fff;border:0;border-radius:10px}
 #preview{width:100%;height:auto;display:block;background:#fff;border:1px solid var(--line)}
-select,#mallNamn{flex:1;min-width:0;font:inherit;padding:6px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
+select,input[type=text],input[type=email]{flex:1;min-width:0;font:inherit;padding:6px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
 label.slider{display:block;margin:8px 0;font-size:13px}
 label.slider input{width:100%}
-#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none}
+#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
 #msg.show{opacity:1}
 </style>
 </head>
@@ -38,6 +38,14 @@ label.slider input{width:100%}
 <main>
   <div class="wall" id="wall"><img src="wall.webp" alt="" onerror="this.remove()"></div>
   <aside>
+    <section>
+      <h2>Inloggning</h2>
+      <div id="loginBox">
+        <div class="row"><input id="username" type="text" placeholder="Användarnamn" autocomplete="username"></div>
+        <div class="row"><input id="password" type="password" placeholder="Lösenord" autocomplete="current-password"><button id="login">Logga in</button></div>
+      </div>
+      <div id="userBox" hidden class="row"><span id="who" class="hint"></span><button id="logout">Logga ut</button></div>
+    </section>
     <section id="libSec">
       <h2>Bibliotek</h2>
       <div class="row"><label class="btn">Lägg till bilder<input type="file" id="file" accept="image/*" multiple hidden></label></div>
@@ -68,6 +76,7 @@ label.slider input{width:100%}
   </aside>
 </main>
 <div id="msg"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 // Ramarnas position i pixlar på en referensbild på 1500×2000 (wall.webp). Justera här om en ram hamnar fel.
 const REF_W = 1500, REF_H = 2000;
@@ -84,25 +93,31 @@ const FRAMES = [
   { x: 1047, y: 1080, w: 118, h: 162 },
 ].map((f, i) => ({ ...f, id: String(i + 1) }));
 
-const KEY = 'tavlor-v1';
+// Supabase-projektet "tavlor". Anon-nyckeln är avsedd att ligga i webbläsaren; säkerheten sitter i RLS-reglerna.
+const SB_URL = 'https://bcmvxizevbfoahunulox.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJjbXZ4aXpldmJmb2FodW51bG94Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5Nzk2MzMsImV4cCI6MjEwNzU1NTYzM30.kCZlgDiOcYpd4iZ2DukG_CED5LSOMJ3hXKNS5h6Hs2U';
+const sb = supabase.createClient(SB_URL, SB_KEY);
+const BUCKET = 'tavlor-bilder', AKTUELL = '__aktuell__', BACKUP = 'Senast före byte';
+const MIGRERAD = 'tavlor-migrerad', KEY = 'tavlor-v1', MALL_KEY = 'tavlor-mallar';
+
 const $ = (id) => document.getElementById(id);
 const el = (tag, props = {}) => Object.assign(document.createElement(tag), props);
 
-// Vilken bild som sitter i varje ram, plus rotation och beskärning. Sparas i webbläsaren.
+let user = null;
 let state = { frames: {} };
-try { state = JSON.parse(localStorage.getItem(KEY)) || state; } catch {}
+let mallar = {};
 const frameState = (id) => (state.frames[id] ??= { img: null, rot: 0, zoom: 1, px: 0, py: 0 });
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} };
 
-// Bibliotekets bilder (själva filerna) lagras i IndexedDB.
-const dbP = new Promise((resolve, reject) => {
+// Gamla lokala bilder (IndexedDB) läses bara för att flyttas upp till molnet.
+let dbPromise;
+const dbP = () => dbPromise ??= new Promise((resolve, reject) => {
   const req = indexedDB.open('tavlor', 1);
   req.onupgradeneeded = () => req.result.createObjectStore('images', { keyPath: 'id' });
   req.onsuccess = () => resolve(req.result);
   req.onerror = () => reject(req.error);
 });
 async function store(mode, fn) {
-  const db = await dbP;
+  const db = await dbP();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('images', mode);
     const req = fn(tx.objectStore('images'));
@@ -119,24 +134,57 @@ function addToLib(rec) {
   img.src = url;
   lib.set(rec.id, { rec, url, img });
 }
+function clearLib() {
+  for (const e of lib.values()) URL.revokeObjectURL(e.url);
+  lib.clear();
+}
+
+const newId = () => Date.now() + Math.random().toString(36).slice(2);
+async function uploadImage(blob, name, id = newId()) {
+  const { error } = await sb.storage.from(BUCKET).upload(id, blob, { contentType: blob.type });
+  if (error) throw error;
+  const { error: rowErr } = await sb.from('bilder').insert({ id, name, path: id });
+  if (rowErr) { await sb.storage.from(BUCKET).remove([id]); throw rowErr; }
+  addToLib({ id, name, blob });
+}
 async function addFiles(files) {
+  if (!user) return msg('Logga in för att ladda upp bilder');
   let n = 0;
   for (const file of files) {
     if (!file.type.startsWith('image/')) continue;
-    const rec = { id: Date.now() + Math.random().toString(36).slice(2), name: file.name || 'klistrad bild', blob: file };
-    await store('readwrite', (s) => s.put(rec));
-    addToLib(rec);
-    n++;
+    try { await uploadImage(file, file.name || 'klistrad bild'); n++; }
+    catch (err) { msg('Uppladdning misslyckades: ' + err.message); }
   }
   renderLib();
-  if (n) msg(`${n} bild(er) tillagda i biblioteket`);
+  if (n) msg(`${n} bild(er) uppladdade`);
 }
 async function deleteImg(id) {
-  await store('readwrite', (s) => s.delete(id));
+  const [s, r] = await Promise.all([
+    sb.storage.from(BUCKET).remove([id]),
+    sb.from('bilder').delete().eq('id', id),
+  ]);
+  if (s.error || r.error) return msg('Kunde inte ta bort bilden');
   URL.revokeObjectURL(lib.get(id).url);
   lib.delete(id);
   for (const st of Object.values(state.frames)) if (st.img === id) st.img = null;
   save(); renderLib(); drawAll(); renderEditor();
+}
+
+// Layouten sparas i molnet efter en kort paus, så att snabba ändringar slås ihop.
+let saveTimer;
+function save() {
+  if (!user) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const { error } = await sb.from('layouts').upsert({ name: AKTUELL, frames: state.frames, updated_at: new Date().toISOString() });
+    if (error) msg('Kunde inte spara: ' + error.message);
+  }, 400);
+}
+async function saveMall(name, frames) {
+  mallar[name] = frames;
+  const { error } = await sb.from('layouts').upsert({ name, frames });
+  if (error) msg('Kunde inte spara mallen: ' + error.message);
+  return !error;
 }
 
 // Väggen: en div per ram med en canvas i passepartout.
@@ -186,6 +234,7 @@ function drawAll() {
 }
 
 function select(id) {
+  if (!user) return msg('Logga in för att redigera väggen');
   if (selected) frameEls.get(selected).classList.remove('sel');
   selected = id;
   frameEls.get(id).classList.add('sel');
@@ -227,11 +276,44 @@ function renderLib() {
   }
 }
 
+function renderMallar(valjNamn) {
+  const sel = $('mallVal');
+  sel.replaceChildren(...Object.keys(mallar).map((n) => el('option', { value: n, textContent: n })));
+  if (valjNamn) sel.value = valjNamn;
+}
+async function sparaMall() {
+  if (!user) return msg('Logga in för att spara mallar');
+  const namn = $('mallNamn').value.trim() || `Mall ${Object.keys(mallar).length + 1}`;
+  if (mallar[namn] && !confirm(`Skriva över mallen "${namn}"?`)) return;
+  if (await saveMall(namn, structuredClone(state.frames))) {
+    renderMallar(namn); $('mallNamn').value = '';
+    msg(`Mallen "${namn}" sparad`);
+  }
+}
+async function laddaMall(namn) {
+  const snap = mallar[namn];
+  if (!snap || !user) return;
+  await saveMall(BACKUP, structuredClone(state.frames));
+  state.frames = structuredClone(snap);
+  save(); renderMallar(namn); renderEditor(); drawAll();
+  msg(`Mallen "${namn}" laddad`);
+}
+
 $('rot').onclick = () => update((st) => { st.rot = (st.rot + 1) % 4; });
 $('clear').onclick = () => update((st) => { st.img = null; });
 $('zoom').oninput = (e) => update((st) => { st.zoom = +e.target.value; });
 $('px').oninput = (e) => update((st) => { st.px = +e.target.value; });
 $('py').oninput = (e) => update((st) => { st.py = +e.target.value; });
+$('spara').onclick = sparaMall;
+$('mallVal').onchange = (e) => laddaMall(e.target.value);
+$('tabort').onclick = async () => {
+  const namn = $('mallVal').value;
+  if (!mallar[namn] || !confirm(`Ta bort mallen "${namn}"?`)) return;
+  const { error } = await sb.from('layouts').delete().eq('name', namn);
+  if (error) return msg('Kunde inte ta bort mallen: ' + error.message);
+  delete mallar[namn];
+  renderMallar();
+};
 
 $('file').onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
 const libSec = $('libSec');
@@ -242,57 +324,94 @@ document.addEventListener('paste', (e) => {
   if (files.length) addFiles(files);
 });
 
+// Användarnamnet blir en intern adress (frida@tavlor.app). Inga mejl skickas.
+$('login').onclick = async () => {
+  const name = $('username').value.trim().toLowerCase();
+  const password = $('password').value;
+  if (!name || !password) return msg('Skriv användarnamn och lösenord');
+  const { error } = await sb.auth.signInWithPassword({ email: `${name}@tavlor.app`, password });
+  if (error) return msg('Fel användarnamn eller lösenord');
+  $('password').value = '';
+};
+$('logout').onclick = () => sb.auth.signOut();
+
+// Hämtar allt från molnet. Gammal lokal data flyttas upp en gång per webbläsare.
+async function loadAll() {
+  const [lay, bil] = await Promise.all([
+    sb.from('layouts').select('name, frames'),
+    sb.from('bilder').select('id, name, path'),
+  ]);
+  if (lay.error || bil.error) return msg('Kunde inte läsa från molnet');
+
+  const remote = Object.fromEntries(lay.data.map((r) => [r.name, r.frames]));
+  const migrera = localStorage.getItem(MIGRERAD) !== '1';
+  let ok = true;
+  const up = async (name, frames) => {
+    const { error } = await sb.from('layouts').upsert({ name, frames });
+    if (error) ok = false;
+    remote[name] = frames;
+  };
+  let legacyFrames = null, legacyMallar = {};
+  if (migrera) {
+    try { legacyFrames = JSON.parse(localStorage.getItem(KEY))?.frames || null; } catch {}
+    try { legacyMallar = JSON.parse(localStorage.getItem(MALL_KEY)) || {}; } catch {}
+    if (!remote[AKTUELL] && legacyFrames && Object.keys(legacyFrames).length) await up(AKTUELL, legacyFrames);
+    for (const [name, frames] of Object.entries(legacyMallar)) if (!(name in remote)) await up(name, frames);
+  }
+
+  state.frames = remote[AKTUELL] || {};
+  mallar = Object.fromEntries(Object.entries(remote).filter(([n]) => n !== AKTUELL));
+
+  clearLib();
+  const have = new Set(bil.data.map((r) => r.id));
+  for (const row of bil.data) {
+    const { data, error } = await sb.storage.from(BUCKET).download(row.path);
+    if (error) { ok = false; continue; }
+    addToLib({ id: row.id, name: row.name, blob: data });
+  }
+
+  let flyttade = 0;
+  if (migrera) {
+    const lokala = await store('readonly', (s) => s.getAll()).catch(() => []);
+    for (const rec of lokala) {
+      if (have.has(rec.id)) continue;
+      try { await uploadImage(rec.blob, rec.name, rec.id); flyttade++; }
+      catch { ok = false; }
+    }
+    if (ok) localStorage.setItem(MIGRERAD, '1');
+  }
+
+  renderMallar(); renderLib(); renderEditor(); drawAll();
+  if (flyttade) msg(`${flyttade} lokala bilder flyttade till molnet`);
+  else if (!ok) msg('Vissa lokala data kunde inte flyttas, försök igen senare');
+}
+function clearAll() {
+  clearLib();
+  state.frames = {};
+  mallar = {};
+  selected = null;
+  renderMallar(); renderLib(); renderEditor(); drawAll();
+}
+
+sb.auth.onAuthStateChange((event, session) => {
+  user = session?.user ?? null;
+  $('loginBox').hidden = !!user;
+  $('userBox').hidden = !user;
+  $('who').textContent = user?.email ?? '';
+  if (user && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) loadAll();
+  if (!user && event === 'SIGNED_OUT') clearAll();
+});
+
 let msgTimer;
 function msg(text) {
   const m = $('msg');
   m.textContent = text; m.classList.add('show');
   clearTimeout(msgTimer);
-  msgTimer = setTimeout(() => m.classList.remove('show'), 2000);
+  msgTimer = setTimeout(() => m.classList.remove('show'), 3000);
 }
-
-// Mallar: en namngiven kopia av ramarnas innehåll (inte bilderna, de ligger i biblioteket).
-const MALL_KEY = 'tavlor-mallar', BACKUP = 'Senast före byte';
-let mallar = {};
-try { mallar = JSON.parse(localStorage.getItem(MALL_KEY)) || {}; } catch {}
-function saveMallar() {
-  try { localStorage.setItem(MALL_KEY, JSON.stringify(mallar)); }
-  catch { msg('Kunde inte spara mallen (webbläsarens lagring är full)'); }
-}
-function renderMallar(valjNamn) {
-  const sel = $('mallVal');
-  sel.replaceChildren(...Object.keys(mallar).map((n) => el('option', { value: n, textContent: n })));
-  if (valjNamn) sel.value = valjNamn;
-}
-function sparaMall() {
-  const namn = $('mallNamn').value.trim() || `Mall ${Object.keys(mallar).length + 1}`;
-  if (mallar[namn] && !confirm(`Skriva över mallen "${namn}"?`)) return;
-  mallar[namn] = structuredClone(state.frames);
-  saveMallar(); renderMallar(namn); $('mallNamn').value = '';
-  msg(`Mallen "${namn}" sparad`);
-}
-function laddaMall(namn) {
-  const snap = mallar[namn];
-  if (!snap) return;
-  mallar[BACKUP] = structuredClone(state.frames);
-  saveMallar();
-  state.frames = structuredClone(snap);
-  save(); renderMallar(namn); renderEditor(); drawAll();
-  msg(`Mallen "${namn}" laddad`);
-}
-$('spara').onclick = sparaMall;
-$('mallVal').onchange = (e) => laddaMall(e.target.value);
-$('tabort').onclick = () => {
-  const namn = $('mallVal').value;
-  if (!mallar[namn] || !confirm(`Ta bort mallen "${namn}"?`)) return;
-  delete mallar[namn]; saveMallar(); renderMallar();
-};
-renderMallar();
 
 renderEditor();
-dbP.then(() => store('readonly', (s) => s.getAll())).then((all) => {
-  all.forEach(addToLib);
-  renderLib(); drawAll();
-});
+renderMallar();
 </script>
 </body>
 </html>
