@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tavelväggen</title>
+<style>
+:root{--bg:#f4f1ea;--ink:#2b2a27;--muted:#8a8478;--line:#d6d1c4;--accent:#6b5a3e;--wood:#4a3a2c}
+@media (prefers-color-scheme: dark){:root{--bg:#1f1e1b;--ink:#ece8df;--muted:#9b968a;--line:#3a3833;--accent:#c9ad7e;--wood:#2a2118}}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,sans-serif}
+main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;padding:16px;max-width:1500px;margin:0 auto;box-sizing:border-box}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.wall{position:relative;width:100%;aspect-ratio:1500/2000;background:#cfc8b8;border-radius:6px;overflow:hidden}
+.wall>img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.frame{position:absolute;background:var(--wood);cursor:pointer;box-sizing:border-box;border-radius:2px}
+.frame:hover{filter:brightness(1.15)}
+.frame.sel{outline:3px solid var(--accent);outline-offset:3px}
+.mat{position:absolute;inset:3%;background:#fff;padding:5%;box-sizing:border-box}
+.mat canvas{width:100%;height:100%;display:block}
+aside section{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:16px}
+h2{font-size:16px;margin:0 0 8px}
+button,.btn{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+.hint{color:var(--muted);font-size:13px;margin:6px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+#lib{display:grid;grid-template-columns:repeat(auto-fill,minmax(88px,1fr));gap:8px;margin-top:8px;min-height:60px}
+.thumb{position:relative}
+.thumb img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:pointer;display:block;border:1px solid var(--line)}
+.thumb .del{position:absolute;top:2px;right:2px;padding:0 6px;line-height:18px;background:#000a;color:#fff;border:0;border-radius:10px}
+#preview{width:100%;height:auto;display:block;background:#fff;border:1px solid var(--line)}
+label.slider{display:block;margin:8px 0;font-size:13px}
+label.slider input{width:100%}
+#msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none}
+#msg.show{opacity:1}
+</style>
+</head>
+<body>
+<main>
+  <div class="wall" id="wall"><img src="wall.webp" alt="" onerror="this.remove()"></div>
+  <aside>
+    <section id="libSec">
+      <h2>Bibliotek</h2>
+      <div class="row"><label class="btn">Lägg till bilder<input type="file" id="file" accept="image/*" multiple hidden></label></div>
+      <p class="hint">Eller klistra in med Ctrl+V, eller dra och släpp bilder här.</p>
+      <div id="lib"></div>
+    </section>
+    <section>
+      <h2 id="title">Ram</h2>
+      <p class="hint" id="hint">Klicka på en ram på väggen för att redigera den.</p>
+      <div id="editor" hidden>
+        <canvas id="preview" width="800" height="800"></canvas>
+        <div class="row">
+          <button id="rot">⟳ Rotera 90°</button>
+          <button id="clear">Ta bort bild</button>
+        </div>
+        <label class="slider">Zoom <input id="zoom" type="range" min="1" max="3" step="0.01" value="1"></label>
+        <label class="slider">Sidled <input id="px" type="range" min="-1" max="1" step="0.01" value="0"></label>
+        <label class="slider">Upp/ner <input id="py" type="range" min="-1" max="1" step="0.01" value="0"></label>
+        <p class="hint">Klicka på en bild i biblioteket för att sätta den i ramen.</p>
+      </div>
+    </section>
+  </aside>
+</main>
+<div id="msg"></div>
+<script>
+// Ramarnas position i pixlar på en referensbild på 1500×2000 (wall.webp). Justera här om en ram hamnar fel.
+const REF_W = 1500, REF_H = 2000;
+const FRAMES = [
+  { x: 336, y: 765, w: 257, h: 203 },
+  { x: 613, y: 686, w: 73, h: 96 },
+  { x: 613, y: 797, w: 73, h: 93 },
+  { x: 710, y: 681, w: 156, h: 207 },
+  { x: 895, y: 697, w: 263, h: 358 },
+  { x: 1180, y: 752, w: 222, h: 261 },
+  { x: 437, y: 993, w: 158, h: 205 },
+  { x: 618, y: 912, w: 260, h: 356 },
+  { x: 900, y: 1082, w: 115, h: 160 },
+  { x: 1047, y: 1080, w: 118, h: 162 },
+].map((f, i) => ({ ...f, id: String(i + 1) }));
+
+const KEY = 'tavlor-v1';
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}) => Object.assign(document.createElement(tag), props);
+
+// Vilken bild som sitter i varje ram, plus rotation och beskärning. Sparas i webbläsaren.
+let state = { frames: {} };
+try { state = JSON.parse(localStorage.getItem(KEY)) || state; } catch {}
+const frameState = (id) => (state.frames[id] ??= { img: null, rot: 0, zoom: 1, px: 0, py: 0 });
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} };
+
+// Bibliotekets bilder (själva filerna) lagras i IndexedDB.
+const dbP = new Promise((resolve, reject) => {
+  const req = indexedDB.open('tavlor', 1);
+  req.onupgradeneeded = () => req.result.createObjectStore('images', { keyPath: 'id' });
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+async function store(mode, fn) {
+  const db = await dbP;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('images', mode);
+    const req = fn(tx.objectStore('images'));
+    tx.oncomplete = () => resolve(req.result);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+const lib = new Map(); // id -> { rec, url, img }
+function addToLib(rec) {
+  const img = new Image();
+  const url = URL.createObjectURL(rec.blob);
+  img.onload = drawAll;
+  img.src = url;
+  lib.set(rec.id, { rec, url, img });
+}
+async function addFiles(files) {
+  let n = 0;
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+    const rec = { id: Date.now() + Math.random().toString(36).slice(2), name: file.name || 'klistrad bild', blob: file };
+    await store('readwrite', (s) => s.put(rec));
+    addToLib(rec);
+    n++;
+  }
+  renderLib();
+  if (n) msg(`${n} bild(er) tillagda i biblioteket`);
+}
+async function deleteImg(id) {
+  await store('readwrite', (s) => s.delete(id));
+  URL.revokeObjectURL(lib.get(id).url);
+  lib.delete(id);
+  for (const st of Object.values(state.frames)) if (st.img === id) st.img = null;
+  save(); renderLib(); drawAll(); renderEditor();
+}
+
+// Väggen: en div per ram med en canvas i passepartout.
+const wall = $('wall'), canvases = new Map(), frameEls = new Map();
+let selected = null;
+for (const f of FRAMES) {
+  const frame = el('div', { className: 'frame', title: `Ram ${f.id}` });
+  Object.assign(frame.style, {
+    left: (f.x / REF_W) * 100 + '%', top: (f.y / REF_H) * 100 + '%',
+    width: (f.w / REF_W) * 100 + '%', height: (f.h / REF_H) * 100 + '%',
+  });
+  const cv = el('canvas', { width: 800, height: Math.round((800 * f.h) / f.w) });
+  const mat = el('div', { className: 'mat' });
+  mat.append(cv);
+  frame.append(mat);
+  frame.onclick = () => select(f.id);
+  wall.append(frame);
+  canvases.set(f.id, cv);
+  frameEls.set(f.id, frame);
+}
+
+// Ritar bilden i en canvas: fylld (cover), roterad, med zoom och förskjutning.
+function drawInto(cv, st) {
+  const ctx = cv.getContext('2d'), cw = cv.width, ch = cv.height;
+  const e = st.img && lib.get(st.img);
+  if (!e || !e.img.naturalWidth) {
+    ctx.fillStyle = '#e8e4da'; ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = '#8a8478'; ctx.textAlign = 'center'; ctx.font = `${ch * 0.06}px sans-serif`;
+    ctx.fillText('Tom', cw / 2, ch / 2);
+    return;
+  }
+  const img = e.img, odd = st.rot % 2 === 1;
+  const vw0 = odd ? img.naturalHeight : img.naturalWidth; // storlek efter rotation
+  const vh0 = odd ? img.naturalWidth : img.naturalHeight;
+  const s = Math.max(cw / vw0, ch / vh0) * st.zoom;
+  const maxX = Math.max(0, (vw0 * s - cw) / 2), maxY = Math.max(0, (vh0 * s - ch) / 2);
+  ctx.save();
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch);
+  ctx.translate(cw / 2 + st.px * maxX, ch / 2 + st.py * maxY);
+  ctx.rotate((st.rot * Math.PI) / 2);
+  ctx.drawImage(img, (-img.naturalWidth * s) / 2, (-img.naturalHeight * s) / 2, img.naturalWidth * s, img.naturalHeight * s);
+  ctx.restore();
+}
+function drawAll() {
+  for (const [id, cv] of canvases) drawInto(cv, frameState(id));
+  if (selected) drawInto($('preview'), frameState(selected));
+}
+
+function select(id) {
+  if (selected) frameEls.get(selected).classList.remove('sel');
+  selected = id;
+  frameEls.get(id).classList.add('sel');
+  const f = FRAMES.find((x) => x.id === id);
+  $('preview').height = Math.round((800 * f.h) / f.w);
+  renderEditor(); drawAll();
+}
+function renderEditor() {
+  const has = !!selected;
+  $('editor').hidden = !has;
+  $('hint').hidden = has;
+  $('title').textContent = has ? `Ram ${selected}` : 'Ram';
+  if (!has) return;
+  const st = frameState(selected);
+  $('zoom').value = st.zoom; $('px').value = st.px; $('py').value = st.py;
+}
+function update(fn) {
+  if (!selected) return;
+  fn(frameState(selected)); save(); drawAll();
+}
+function assign(imgId) {
+  if (!selected) return msg('Välj en ram på väggen först');
+  Object.assign(frameState(selected), { img: imgId, rot: 0, zoom: 1, px: 0, py: 0 });
+  save(); renderEditor(); drawAll();
+  msg(`Bilden satt i ram ${selected}`);
+}
+
+function renderLib() {
+  const box = $('lib');
+  box.replaceChildren();
+  for (const [id, { rec, url }] of lib) {
+    const t = el('div', { className: 'thumb' });
+    const img = el('img', { src: url, alt: rec.name, title: rec.name });
+    img.onclick = () => assign(id);
+    const del = el('button', { className: 'del', textContent: '×', title: 'Ta bort ur biblioteket' });
+    del.onclick = () => { if (confirm('Ta bort bilden ur biblioteket?')) deleteImg(id); };
+    t.append(img, del);
+    box.append(t);
+  }
+}
+
+$('rot').onclick = () => update((st) => { st.rot = (st.rot + 1) % 4; });
+$('clear').onclick = () => update((st) => { st.img = null; });
+$('zoom').oninput = (e) => update((st) => { st.zoom = +e.target.value; });
+$('px').oninput = (e) => update((st) => { st.px = +e.target.value; });
+$('py').oninput = (e) => update((st) => { st.py = +e.target.value; });
+
+$('file').onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
+const libSec = $('libSec');
+libSec.ondragover = (e) => e.preventDefault();
+libSec.ondrop = (e) => { e.preventDefault(); addFiles([...e.dataTransfer.files]); };
+document.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) addFiles(files);
+});
+
+let msgTimer;
+function msg(text) {
+  const m = $('msg');
+  m.textContent = text; m.classList.add('show');
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => m.classList.remove('show'), 2000);
+}
+
+renderEditor();
+dbP.then(() => store('readonly', (s) => s.getAll())).then((all) => {
+  all.forEach(addToLib);
+  renderLib(); drawAll();
+});
+</script>
+</body>
+</html>
