@@ -17,6 +17,8 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:16px;padding:16p
 .frame.sel{outline:3px solid var(--accent);outline-offset:3px}
 .mat{position:absolute;inset:3%;background:#fff;padding:5%;box-sizing:border-box}
 .mat canvas{width:100%;height:100%;display:block}
+.cart{position:absolute;right:-8px;bottom:-8px;width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;text-decoration:none;box-shadow:0 1px 4px #0008;z-index:1}
+.cart[hidden]{display:none}
 aside section{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:16px}
 h2{font-size:16px;margin:0 0 8px}
 button,.btn{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit;cursor:pointer}
@@ -192,7 +194,7 @@ async function saveMall(name, frames) {
 }
 
 // Väggen: en div per ram med en canvas i passepartout.
-const wall = $('wall'), canvases = new Map(), frameEls = new Map();
+const wall = $('wall'), canvases = new Map(), frameEls = new Map(), cartEls = new Map();
 let selected = null;
 for (const f of FRAMES) {
   const frame = el('div', { className: 'frame', title: `Ram ${f.id}` });
@@ -205,9 +207,14 @@ for (const f of FRAMES) {
   mat.append(cv);
   frame.append(mat);
   frame.onclick = () => select(f.id);
+  const cart = el('a', { className: 'cart', textContent: '🛒', title: 'Köp den här', target: '_blank', rel: 'noopener' });
+  cart.hidden = true;
+  cart.onclick = (e) => e.stopPropagation(); // öppnar länken utan att markera ramen
+  frame.append(cart);
   wall.append(frame);
   canvases.set(f.id, cv);
   frameEls.set(f.id, frame);
+  cartEls.set(f.id, cart);
 }
 
 // Ritar bilden i en canvas: fylld (cover), roterad, med zoom och förskjutning.
@@ -234,6 +241,11 @@ function drawInto(cv, st) {
 }
 function drawAll() {
   for (const [id, cv] of canvases) drawInto(cv, frameState(id));
+  for (const [id, cart] of cartEls) {
+    const url = frameState(id).img && lib.get(frameState(id).img)?.rec.url;
+    cart.hidden = !url;
+    if (url) cart.href = url;
+  }
   if (selected) drawInto($('preview'), frameState(selected));
 }
 
@@ -272,7 +284,7 @@ async function saveLink() {
   const { error } = await sb.from('bilder').update({ url: url || null }).eq('id', bild.rec.id);
   if (error) return msg('Kunde inte spara länken: ' + error.message);
   bild.rec.url = url || null;
-  renderEditor();
+  renderEditor(); drawAll();
   msg('Länken sparad');
 }
 function update(fn) {
