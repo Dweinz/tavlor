@@ -27,6 +27,7 @@ button,.btn{font:inherit;padding:6px 10px;border:1px solid var(--line);border-ra
 .thumb img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:pointer;display:block;border:1px solid var(--line)}
 .thumb .del{position:absolute;top:2px;right:2px;padding:0 6px;line-height:18px;background:#000a;color:#fff;border:0;border-radius:10px}
 #preview{width:100%;height:auto;display:block;background:#fff;border:1px solid var(--line)}
+select,#mallNamn{flex:1;min-width:0;font:inherit;padding:6px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
 label.slider{display:block;margin:8px 0;font-size:13px}
 label.slider input{width:100%}
 #msg{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:6px;opacity:0;transition:opacity .2s;pointer-events:none}
@@ -42,6 +43,12 @@ label.slider input{width:100%}
       <div class="row"><label class="btn">Lägg till bilder<input type="file" id="file" accept="image/*" multiple hidden></label></div>
       <p class="hint">Eller klistra in med Ctrl+V, eller dra och släpp bilder här.</p>
       <div id="lib"></div>
+    </section>
+    <section>
+      <h2>Mallar</h2>
+      <div class="row"><input id="mallNamn" type="text" placeholder="Namn på mallen"><button id="spara">Spara</button></div>
+      <div class="row"><select id="mallVal"></select><button id="tabort">Ta bort</button></div>
+      <p class="hint">Att välja en mall laddar den direkt. Bilderna i biblioteket påverkas inte. Det senaste arbetsläget sparas som "Senast före byte" innan en mall laddas.</p>
     </section>
     <section>
       <h2 id="title">Ram</h2>
@@ -242,6 +249,44 @@ function msg(text) {
   clearTimeout(msgTimer);
   msgTimer = setTimeout(() => m.classList.remove('show'), 2000);
 }
+
+// Mallar: en namngiven kopia av ramarnas innehåll (inte bilderna, de ligger i biblioteket).
+const MALL_KEY = 'tavlor-mallar', BACKUP = 'Senast före byte';
+let mallar = {};
+try { mallar = JSON.parse(localStorage.getItem(MALL_KEY)) || {}; } catch {}
+function saveMallar() {
+  try { localStorage.setItem(MALL_KEY, JSON.stringify(mallar)); }
+  catch { msg('Kunde inte spara mallen (webbläsarens lagring är full)'); }
+}
+function renderMallar(valjNamn) {
+  const sel = $('mallVal');
+  sel.replaceChildren(...Object.keys(mallar).map((n) => el('option', { value: n, textContent: n })));
+  if (valjNamn) sel.value = valjNamn;
+}
+function sparaMall() {
+  const namn = $('mallNamn').value.trim() || `Mall ${Object.keys(mallar).length + 1}`;
+  if (mallar[namn] && !confirm(`Skriva över mallen "${namn}"?`)) return;
+  mallar[namn] = structuredClone(state.frames);
+  saveMallar(); renderMallar(namn); $('mallNamn').value = '';
+  msg(`Mallen "${namn}" sparad`);
+}
+function laddaMall(namn) {
+  const snap = mallar[namn];
+  if (!snap) return;
+  mallar[BACKUP] = structuredClone(state.frames);
+  saveMallar();
+  state.frames = structuredClone(snap);
+  save(); renderMallar(namn); renderEditor(); drawAll();
+  msg(`Mallen "${namn}" laddad`);
+}
+$('spara').onclick = sparaMall;
+$('mallVal').onchange = (e) => laddaMall(e.target.value);
+$('tabort').onclick = () => {
+  const namn = $('mallVal').value;
+  if (!mallar[namn] || !confirm(`Ta bort mallen "${namn}"?`)) return;
+  delete mallar[namn]; saveMallar(); renderMallar();
+};
+renderMallar();
 
 renderEditor();
 dbP.then(() => store('readonly', (s) => s.getAll())).then((all) => {
