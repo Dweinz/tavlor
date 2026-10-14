@@ -70,6 +70,10 @@ label.slider input{width:100%}
         <label class="slider">Zoom <input id="zoom" type="range" min="1" max="3" step="0.01" value="1"></label>
         <label class="slider">Sidled <input id="px" type="range" min="-1" max="1" step="0.01" value="0"></label>
         <label class="slider">Upp/ner <input id="py" type="range" min="-1" max="1" step="0.01" value="0"></label>
+        <div id="linkBox" hidden>
+          <div class="row"><input id="link" type="url" placeholder="Länk till där man köper den"><button id="saveLink">Spara</button></div>
+          <p class="hint"><a id="openLink" target="_blank" rel="noopener"></a></p>
+        </div>
         <p class="hint">Klicka på en bild i biblioteket för att sätta den i ramen.</p>
       </div>
     </section>
@@ -250,6 +254,26 @@ function renderEditor() {
   if (!has) return;
   const st = frameState(selected);
   $('zoom').value = st.zoom; $('px').value = st.px; $('py').value = st.py;
+  const bild = st.img && lib.get(st.img);
+  $('linkBox').hidden = !bild;
+  if (bild) {
+    const url = bild.rec.url || '';
+    $('link').value = url;
+    $('openLink').href = url;
+    $('openLink').textContent = url ? 'Öppna länken' : 'Ingen länk sparad';
+  }
+}
+// Länken hör till bilden, inte till ramen. Bara http(s) tillåts, så att inga javascript-länkar kan sparas.
+async function saveLink() {
+  const bild = selected && frameState(selected).img && lib.get(frameState(selected).img);
+  if (!bild) return;
+  const url = $('link').value.trim();
+  if (url && !/^https?:\/\//i.test(url)) return msg('Länken måste börja med https://');
+  const { error } = await sb.from('bilder').update({ url: url || null }).eq('id', bild.rec.id);
+  if (error) return msg('Kunde inte spara länken: ' + error.message);
+  bild.rec.url = url || null;
+  renderEditor();
+  msg('Länken sparad');
 }
 function update(fn) {
   if (!selected) return;
@@ -304,6 +328,7 @@ $('clear').onclick = () => update((st) => { st.img = null; });
 $('zoom').oninput = (e) => update((st) => { st.zoom = +e.target.value; });
 $('px').oninput = (e) => update((st) => { st.px = +e.target.value; });
 $('py').oninput = (e) => update((st) => { st.py = +e.target.value; });
+$('saveLink').onclick = saveLink;
 $('spara').onclick = sparaMall;
 $('mallVal').onchange = (e) => laddaMall(e.target.value);
 $('tabort').onclick = async () => {
@@ -339,7 +364,7 @@ $('logout').onclick = () => sb.auth.signOut();
 async function loadAll() {
   const [lay, bil] = await Promise.all([
     sb.from('layouts').select('name, frames'),
-    sb.from('bilder').select('id, name, path'),
+    sb.from('bilder').select('id, name, path, url'),
   ]);
   if (lay.error || bil.error) return msg('Kunde inte läsa från molnet');
 
@@ -367,7 +392,7 @@ async function loadAll() {
   for (const row of bil.data) {
     const { data, error } = await sb.storage.from(BUCKET).download(row.path);
     if (error) { ok = false; continue; }
-    addToLib({ id: row.id, name: row.name, blob: data });
+    addToLib({ id: row.id, name: row.name, url: row.url, blob: data });
   }
 
   let flyttade = 0;
